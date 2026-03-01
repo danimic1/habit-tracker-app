@@ -1,12 +1,11 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-function ResetPasswordForm() {
+export default function ResetPasswordPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -16,21 +15,35 @@ function ResetPasswordForm() {
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const code = searchParams.get("code");
-
-    if (!code) {
-      setSessionError("Invalid or missing reset link. Please request a new one.");
-      return;
-    }
-
-    supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
-      if (error) {
-        setSessionError("This reset link has expired or is invalid. Please request a new one.");
-      } else {
+    // Give the Supabase client a moment to process the hash token,
+    // then check if we already have a recovery session.
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
         setSessionReady(true);
+        return;
       }
+
+      // Listen for the PASSWORD_RECOVERY event fired by the Supabase client
+      // after it automatically exchanges the #access_token hash fragment.
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+        if (event === "PASSWORD_RECOVERY") {
+          setSessionReady(true);
+          subscription.unsubscribe();
+        }
+      });
+
+      // If no event fires within 5 seconds, the link is invalid/missing.
+      const timeout = setTimeout(() => {
+        setSessionError("Invalid or missing reset link. Please request a new one.");
+        subscription.unsubscribe();
+      }, 5000);
+
+      return () => {
+        clearTimeout(timeout);
+        subscription.unsubscribe();
+      };
     });
-  }, [searchParams]);
+  }, []);
 
   async function handleReset() {
     if (password !== confirmPassword) {
@@ -49,7 +62,8 @@ function ResetPasswordForm() {
 
     if (error) return setMessage(error.message);
 
-    router.replace("/login?message=Password+updated+successfully");
+    await supabase.auth.signOut();
+    router.replace("/login");
   }
 
   if (sessionError) {
@@ -114,19 +128,5 @@ function ResetPasswordForm() {
         </button>
       </div>
     </main>
-  );
-}
-
-export default function ResetPasswordPage() {
-  return (
-    <Suspense
-      fallback={
-        <main className="min-h-screen bg-gray-100 flex items-center justify-center px-4">
-          <p className="text-sm text-gray-500">Loading…</p>
-        </main>
-      }
-    >
-      <ResetPasswordForm />
-    </Suspense>
   );
 }
